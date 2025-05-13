@@ -62,9 +62,14 @@ def main():
     # Detect platform and set base download path
     if "com.termux" in os.getenv("PREFIX", "") or "Android" in platform.platform():
         base_path = "/data/data/com.termux/files/home/storage/downloads/"
-    else:
-        uname = os.getlogin()
+    elif platform.system() == "Windows":
+        import getpass
+        uname = getpass.getuser()
         base_path = f"C:\\Users\\{uname}\\Downloads"
+    else:
+        base_path = "/opt/render/project/src/downloads"
+
+    os.makedirs(base_path, exist_ok=True)
 
     st.info(f"💾 Downloads will be saved to: `{base_path}`")
 
