@@ -4,24 +4,24 @@ import json
 import re
 import platform
 import streamlit as st
-from streamlit.runtime.scriptrunner import get_script_run_ctx
+from tempfile import NamedTemporaryFile
 
-# Helper function to sanitize folder names
+# --- Helper Functions ---
 def sanitize_filename(name):
+    """Sanitize folder names to remove invalid characters."""
     invalid_chars = r'[<>:"/\\|?*]'
-    sanitized = re.sub(invalid_chars, "_", name).strip().rstrip(". ")
-    return sanitized
+    return re.sub(invalid_chars, "_", name).strip().rstrip(". ")
 
-# Check if ffmpeg is installed
 def check_ffmpeg():
+    """Check if ffmpeg is installed and accessible."""
     try:
         subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         return True
     except Exception:
         return False
 
-# Function to download a single video
 def download_video(video_url, output_dir, format_string, index, total, cookies_path=None):
+    """Download a single video using yt-dlp."""
     try:
         command = [
             "yt-dlp",
@@ -32,13 +32,10 @@ def download_video(video_url, output_dir, format_string, index, total, cookies_p
             "--merge-output-format", "mp4",
             "-o", os.path.join(output_dir, "%(playlist_index)s - %(title)s.%(ext)s"),
         ]
-
         if cookies_path:
             command += ["--cookies", cookies_path]
-
         command.append(video_url)
 
-        # Create a status container for this download
         status_placeholder = st.empty()
         status_placeholder.write(f"⬇ Downloading video {index}/{total}...")
 
@@ -48,22 +45,35 @@ def download_video(video_url, output_dir, format_string, index, total, cookies_p
             status_placeholder.success(f"✅ Video {index} downloaded successfully!")
         else:
             status_placeholder.error(f"❌ Failed to download video {index}")
-
         return result.returncode == 0
     except Exception as e:
         st.error(f"Error downloading video {index}: {str(e)}")
         return False
 
-# Main Streamlit app
+# --- Main App ---
 def main():
     st.title("🎬 YouTube Playlist Downloader")
+
+    # Sidebar instructions
+    st.sidebar.header("🔐 Private Playlist? Upload cookies.txt")
+    st.sidebar.markdown("""
+To download private, unlisted, or age-restricted playlists:
+
+1. Install [Cookie-Editor](https://cookie-editor.cgagnier.ca/) on your browser.
+2. Visit YouTube and **log in**.
+3. Click the Cookie-Editor extension icon.
+4. Click **Export** → **Download as `cookies.txt`**.
+5. Upload the file below:
+""")
+
+    cookies_file = st.sidebar.file_uploader("Upload your cookies.txt", type="txt")
 
     # Check ffmpeg
     if not check_ffmpeg():
         st.error("❌ ffmpeg not found. Please install ffmpeg and ensure it's in your PATH.")
         st.stop()
 
-    # Detect platform and set base download path
+    # Set download path
     if "com.termux" in os.getenv("PREFIX", "") or "Android" in platform.platform():
         base_path = "/data/data/com.termux/files/home/storage/downloads/"
     elif platform.system() == "Windows":
@@ -76,86 +86,56 @@ def main():
     os.makedirs(base_path, exist_ok=True)
     st.info(f"💾 Downloads will be saved to: `{base_path}`")
 
-    # Explanation for cookies
-    with st.expander("🔐 Need to download private/restricted videos? (Click here)"):
-        st.markdown("""
-        Some playlists may be **private, age-restricted, or unlisted** and require your YouTube account to access them.
-        
-        To download these videos, you need to upload your `cookies.txt` file from your browser session. Here's how:
-
-        1. Install this Chrome/Firefox extension: [Get cookies.txt](https://chromewebstore.google.com/detail/get-cookiestxt/npecfdijgoblfcgagoijgmgejmcpnhof)
-        2. Open the YouTube playlist in a new tab and ensure you're signed in.
-        3. Click the extension icon and download your `cookies.txt`.
-        4. Upload it below.
-
-        ⚠️ **Important:** Your cookies are never stored. They are only used temporarily for this session and deleted afterward.
-        """)
-
-    uploaded_cookies = st.file_uploader("📄 Upload cookies.txt (optional, only for private/restricted playlists)", type=["txt"])
-    cookies_path = None
-
-    if uploaded_cookies:
-        cookies_path = os.path.join(base_path, "cookies.txt")
-        with open(cookies_path, "wb") as f:
-            f.write(uploaded_cookies.getbuffer())
-        st.success("✅ Cookies uploaded and will be used for downloading.")
-
-    # Playlist URL input
     playlist_url = st.text_input("🔗 Enter YouTube Playlist URL:")
-
-    # Quality selection
     quality = st.selectbox("🎞 Choose video quality:", ["High", "Medium (720p)", "Low (360p)"])
 
     if playlist_url:
-        # Set format string based on quality selection
-        if quality == "High":
-            format_string = "bestvideo+bestaudio/best"
-        elif quality == "Medium (720p)":
-            format_string = (
-                "bestvideo[height<=720]+bestaudio[ext=m4a]/"
-                "bestvideo[height<=720]+bestaudio/best[height<=720]"
-            )
-        else:
-            format_string = (
-                "bestvideo[height<=360]+bestaudio[ext=m4a]/"
-                "bestvideo[height<=360]+bestaudio/best[height<=360]"
-            )
+        format_string = {
+            "High": "bestvideo+bestaudio/best",
+            "Medium (720p)": "bestvideo[height<=720]+bestaudio[ext=m4a]/best[height<=720]",
+            "Low (360p)": "bestvideo[height<=360]+bestaudio[ext=m4a]/best[height<=360]"
+        }[quality]
+
+        # Save uploaded cookies to temp file
+        temp_cookie_path = None
+        if cookies_file:
+            with NamedTemporaryFile(delete=False, mode="w", suffix=".txt") as temp_cookie:
+                temp_cookie.write(cookies_file.read().decode())
+                temp_cookie_path = temp_cookie.name
 
         with st.spinner("📂 Fetching playlist metadata..."):
             try:
-                metadata_command = ["yt-dlp", "--dump-single-json"]
-                if cookies_path:
-                    metadata_command += ["--cookies", cookies_path]
-                metadata_command.append(playlist_url)
+                command_meta = ["yt-dlp", "--dump-single-json"]
+                if temp_cookie_path:
+                    command_meta += ["--cookies", temp_cookie_path]
+                else:
+                    # fallback to skip auth check
+                    command_meta += ["--extractor-args", "youtubetab:skip=authcheck"]
+                command_meta.append(playlist_url)
 
-                result_meta = subprocess.run(
-                    metadata_command, capture_output=True, text=True, check=True
-                )
+                result_meta = subprocess.run(command_meta, capture_output=True, text=True, check=True)
                 playlist_meta = json.loads(result_meta.stdout)
                 playlist_title = playlist_meta.get("title", "playlist")
                 sanitized_title = sanitize_filename(playlist_title)
                 output_dir = os.path.join(base_path, sanitized_title)
                 os.makedirs(output_dir, exist_ok=True)
 
-                flat_command = ["yt-dlp", "--flat-playlist", "--dump-json"]
-                if cookies_path:
-                    flat_command += ["--cookies", cookies_path]
-                flat_command.append(playlist_url)
-
-                result = subprocess.run(flat_command, capture_output=True, text=True, check=True)
+                result = subprocess.run(
+                    ["yt-dlp", "--flat-playlist", "--dump-json"] +
+                    (["--cookies", temp_cookie_path] if temp_cookie_path else ["--extractor-args", "youtubetab:skip=authcheck"]) +
+                    [playlist_url],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
                 videos_json = result.stdout.strip().splitlines()
                 videos = [json.loads(v) for v in videos_json]
 
                 st.success(f"📁 Playlist: {playlist_title} ({len(videos)} videos)")
-
-                # Display each video with a download button
                 st.subheader("🎬 Videos in Playlist:")
 
-                # Create a container for the download all button
-                all_button_container = st.container()
-
-                # Create a container for individual video buttons
                 video_container = st.container()
+                all_button_container = st.container()
 
                 with video_container:
                     for idx, video in enumerate(videos, start=1):
@@ -165,10 +145,9 @@ def main():
                         with col2:
                             if st.button(f"Download #{idx}", key=f"dl_{video['id']}"):
                                 video_url = f"https://www.youtube.com/watch?v={video['id']}"
-                                if download_video(video_url, output_dir, format_string, idx, len(videos), cookies_path):
+                                if download_video(video_url, output_dir, format_string, idx, len(videos), cookies_path=temp_cookie_path):
                                     st.session_state[f"downloaded_{video['id']}"] = True
 
-                # Download all button
                 with all_button_container:
                     if st.button("🚀 Download All Videos", type="primary"):
                         progress_bar = st.progress(0)
@@ -176,25 +155,21 @@ def main():
 
                         for idx, video in enumerate(videos, start=1):
                             video_url = f"https://www.youtube.com/watch?v={video['id']}"
-                            if download_video(video_url, output_dir, format_string, idx, len(videos), cookies_path):
+                            if download_video(video_url, output_dir, format_string, idx, len(videos), cookies_path=temp_cookie_path):
                                 success_count += 1
                             progress_bar.progress(idx / len(videos))
 
                         st.success(f"✅ Successfully downloaded {success_count}/{len(videos)} videos!")
 
             except subprocess.CalledProcessError as e:
-                st.error(f"❌ Error fetching playlist info: {e.stderr}")
+                st.error(f"❌ Error fetching playlist info:\n\n{e.stderr}")
             except json.JSONDecodeError:
                 st.error("❌ Failed to parse playlist information.")
             except Exception as e:
                 st.error(f"❌ An unexpected error occurred: {str(e)}")
-
-    # Clean up cookies file after session
-    if cookies_path and os.path.exists(cookies_path):
-        try:
-            os.remove(cookies_path)
-        except Exception:
-            pass
+            finally:
+                if temp_cookie_path and os.path.exists(temp_cookie_path):
+                    os.remove(temp_cookie_path)
 
 if __name__ == "__main__":
     main()
