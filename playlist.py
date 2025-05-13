@@ -1,152 +1,129 @@
 import os
 import subprocess
 import json
-import platform
 import re
-from colorama import Fore, Style, init
+import platform
+import streamlit as st
 
-# Initialize colorama for colored text output.
-init(autoreset=True)
+# Helper function to sanitize folder names
+def sanitize_filename(name):
+    invalid_chars = r'[<>:"/\\|?*]'
+    sanitized = re.sub(invalid_chars, "_", name).strip().rstrip(". ")
+    return sanitized
 
-# Clear screen function for Windows and Unix-based systems (including Termux)
-def clear_screen():
-    if os.name == 'nt':
-        os.system('cls')
+# Check if ffmpeg is installed
+def check_ffmpeg():
+    try:
+        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        return True
+    except Exception:
+        return False
+
+# Main Streamlit app
+def main():
+    st.title("🎬 YouTube Playlist Downloader")
+    # st.write("Created by Rajkishor Patra (Streamlit version) 🚀")
+
+    # Check ffmpeg
+    if not check_ffmpeg():
+        st.error("❌ ffmpeg not found. Please install ffmpeg and ensure it's in your PATH.")
+        st.stop()
+
+    # Detect platform and set base download path
+    if "com.termux" in os.getenv("PREFIX", "") or "Android" in platform.platform():
+        base_path = "/data/data/com.termux/files/home/storage/downloads/"
     else:
-        os.system('clear')
+        uname = os.getlogin()
+        base_path = f"C:\\Users\\{uname}\\Downloads"
 
-# Clear screen on startup
-clear_screen()
+    st.info(f"💾 Downloads will be saved to: `{base_path}`")
 
-# Display banner with your GitHub info.
-print(Fore.MAGENTA + '''
-    ╔══╗
-    ╚╗╔╝
-    ╔╝(¯`v´¯)
-    ╚══`.¸.[YT Playlist Downloader]
-    ''')
-print("---------------------------------------------")
-print("Created by:", Fore.GREEN + "Rajkishor Patra")
-print("Github:", Fore.GREEN + "imraj569")
-print(Fore.YELLOW + "Just paste your favorite YouTube playlist URL and it's done ☺️🐈")
-print("---------------------------------------------")
+    # Playlist URL input
+    playlist_url = st.text_input("🔗 Enter YouTube Playlist URL:")
 
-# Ensure ffmpeg is installed for merging
-try:
-    subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-except Exception:
-    print(Fore.RED + "❌ ffmpeg not found. Please install ffmpeg and ensure it's in your PATH to merge audio and video.")
-    exit(1)
+    # Quality selection
+    quality = st.selectbox("🎞 Choose video quality:", ["High", "Medium (720p)", "Low (360p)"])
 
-# Detect platform and set base path for downloads
-if "com.termux" in os.getenv("PREFIX", "") or "Android" in platform.platform():
-    base_path = "/data/data/com.termux/files/home/storage/downloads/"
-    is_termux = True
-else:
-    uname = os.getlogin()
-    base_path = f"C:\\Users\\{uname}\\Downloads"
-    is_termux = False
+    if st.button("🚀 Start Download"):
+        if not playlist_url:
+            st.error("Please enter a valid playlist URL.")
+            return
 
-print(Fore.CYAN + f"📱 Detected platform: {'Termux (Android)' if is_termux else 'Windows'}")
-print(Fore.CYAN + f"💾 Download folder set to: {base_path}")
+        # Set format string
+        if quality == "High":
+            format_string = "bestvideo+bestaudio/best"
+        elif quality == "Medium (720p)":
+            format_string = (
+                "bestvideo[height<=720]+bestaudio[ext=m4a]/"
+                "bestvideo[height<=720]+bestaudio/best[height<=720]"
+            )
+        else:
+            format_string = (
+                "bestvideo[height<=360]+bestaudio[ext=m4a]/"
+                "bestvideo[height<=360]+bestaudio/best[height<=360]"
+            )
 
-# Ask user for the YouTube playlist URL
-playlist_url = input(Fore.YELLOW + "\n🔗 Enter YouTube playlist URL: ").strip()
+        with st.spinner("📂 Fetching playlist metadata..."):
+            try:
+                result_meta = subprocess.run(
+                    ["yt-dlp", "--dump-single-json", playlist_url],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                playlist_meta = json.loads(result_meta.stdout)
+                playlist_title = playlist_meta.get("title", "playlist")
+            except subprocess.CalledProcessError:
+                st.error("❌ Failed to fetch playlist metadata.")
+                return
 
-# Ask for resolution (quality) choice
-print(Fore.BLUE + "\n🎞 Choose video quality:")
-print(Fore.GREEN + "1. High   = highest available")
-print(Fore.YELLOW + "2. Medium = 720p (or lower if not available)")
-print(Fore.MAGENTA + "3. Low    = 360p (or lower if not available)")
+        sanitized_title = sanitize_filename(playlist_title)
+        output_dir = os.path.join(base_path, sanitized_title)
+        os.makedirs(output_dir, exist_ok=True)
 
-quality_choice = input(Fore.CYAN + "\nChoose (1/2/3): ").strip()
+        st.success(f"📁 Download folder created: `{output_dir}`")
 
-# Define format string based on user's quality choice:
-if quality_choice == "1":
-    format_string = "bestvideo+bestaudio/best"
-    quality_label = "High"
-elif quality_choice == "2":
-    format_string = (
-        "bestvideo[height<=720]+bestaudio[ext=m4a]/"
-        "bestvideo[height<=720]+bestaudio/best[height<=720]"
-    )
-    quality_label = "Medium (720p)"
-elif quality_choice == "3":
-    format_string = (
-        "bestvideo[height<=360]+bestaudio[ext=m4a]/"
-        "bestvideo[height<=360]+bestaudio/best[height<=360]"
-    )
-    quality_label = "Low (360p)"
-else:
-    print(Fore.RED + "❌ Invalid choice. Exiting.")
-    exit(1)
+        with st.spinner("🔍 Fetching video entries..."):
+            try:
+                result = subprocess.run(
+                    ["yt-dlp", "--flat-playlist", "--dump-json", playlist_url],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                videos_json = result.stdout.strip().splitlines()
+                total_videos = len(videos_json)
+            except subprocess.CalledProcessError:
+                st.error("❌ Failed to fetch playlist info.")
+                return
 
-print(Fore.GREEN + f"\n✔ Selected quality: {quality_label}")
+        st.info(f"🎬 Total videos found: {total_videos}")
 
-# Fetch playlist metadata to retrieve the playlist title (used for folder naming)
-print(Fore.BLUE + "\n📂 Fetching playlist metadata...\n")
-try:
-    result_meta = subprocess.run(
-        ["yt-dlp", "--dump-single-json", playlist_url],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    playlist_meta = json.loads(result_meta.stdout)
-    playlist_title = playlist_meta.get("title", "playlist")
-except subprocess.CalledProcessError as e:
-    print(Fore.RED + "❌ Failed to fetch playlist metadata.")
-    print(e)
-    exit(1)
+        progress_bar = st.progress(0)
 
-# Sanitize the playlist title for folder naming (remove invalid Windows chars)
-invalid_chars = r'[<>:"/\\|?*]'
-sanitized_title = re.sub(invalid_chars, "_", playlist_title).strip().rstrip(". ")
-output_dir = os.path.join(base_path, sanitized_title)
+        # Download each video
+        for idx, video_entry in enumerate(videos_json, start=1):
+            video_id = json.loads(video_entry).get("id")
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
 
-# Create output directory
-os.makedirs(output_dir, exist_ok=True)
-print(Fore.GREEN + f"📁 Folder: {output_dir}")
+            st.write(f"⬇ Downloading video {idx}/{total_videos}...")
 
-# Fetch list of video entries from the playlist
-print(Fore.BLUE + "\n🔍 Fetching video entries...\n")
-try:
-    result = subprocess.run(
-        ["yt-dlp", "--flat-playlist", "--dump-json", playlist_url],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    videos_json = result.stdout.strip().splitlines()
-    total_videos = len(videos_json)
-except subprocess.CalledProcessError as e:
-    print(Fore.RED + "❌ Failed to fetch playlist info.")
-    print(e)
-    exit(1)
+            command = [
+                "yt-dlp",
+                "--no-warnings",
+                "--quiet",
+                "--no-progress",
+                "-f", format_string,
+                "--merge-output-format", "mp4",
+                "-o", os.path.join(output_dir, "%(playlist_index)s - %(title)s.%(ext)s"),
+                video_url
+            ]
 
-print(Fore.MAGENTA + f"🎬 Total videos found: {total_videos}\n")
+            subprocess.run(command)
 
-# Download each video one-by-one and remove source files after merging
-for idx, video_entry in enumerate(videos_json, start=1):
-    video_id = json.loads(video_entry).get("id")
-    video_url = f"https://www.youtube.com/watch?v={video_id}"
-    videos_left = total_videos - idx
-    print(total_videos)
-    print(Fore.YELLOW + "\n⬇ Downloading the playlist...\n")
-    # print(Fore.YELLOW + f"⬇ Downloading video {idx}/{total_videos} (Remaining: {videos_left})...")
+            progress_bar.progress(idx / total_videos)
 
+        st.success("✅ All videos downloaded successfully!")
 
-    command = [
-        "yt-dlp",
-        "--no-warnings",
-        "--quiet",
-        "--no-progress",
-        "-f", format_string,
-        "--merge-output-format", "mp4",
-        "-o", os.path.join(output_dir, "%(playlist_index)s - %(title)s.%(ext)s"),
-        playlist_url
-    ]
-
-    subprocess.run(command)
-
-print(Fore.GREEN + "\n✅ All videos downloaded successfully!")
+if __name__ == "__main__":
+    main()
